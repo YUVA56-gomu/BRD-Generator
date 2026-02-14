@@ -1,0 +1,147 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: brd-generator
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: brd-config
+  namespace: brd-generator
+data:
+  NODE_ENV: "production"
+  PORT: "3000"
+  DB_HOST: "postgres-service"
+  DB_PORT: "5432"
+  DB_NAME: "brd_generator"
+  DB_USER: "postgres"
+  LLM_PROVIDER: "openai"
+  CHROMA_HOST: "chroma-service"
+  CHROMA_PORT: "8000"
+  LOG_LEVEL: "info"
+
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: brd-secrets
+  namespace: brd-generator
+type: Opaque
+stringData:
+  DB_PASSWORD: "change-me-in-production"
+  OPENAI_API_KEY: "your-api-key-here"
+  JWT_SECRET: "your-jwt-secret-here"
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: brd-generator
+  namespace: brd-generator
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: brd-generator
+  template:
+    metadata:
+      labels:
+        app: brd-generator
+    spec:
+      containers:
+      - name: brd-generator
+        image: brd-generator:latest
+        imagePullPolicy: Always
+        ports:
+        - containerPort: 3000
+          name: http
+        envFrom:
+        - configMapRef:
+            name: brd-config
+        - secretRef:
+            name: brd-secrets
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "250m"
+          limits:
+            memory: "512Mi"
+            cpu: "500m"
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 3000
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 3000
+          initialDelaySeconds: 10
+          periodSeconds: 5
+        volumeMounts:
+        - name: logs
+          mountPath: /app/logs
+        - name: uploads
+          mountPath: /app/uploads
+      volumes:
+      - name: logs
+        emptyDir: {}
+      - name: uploads
+        emptyDir: {}
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: brd-generator-service
+  namespace: brd-generator
+spec:
+  type: LoadBalancer
+  selector:
+    app: brd-generator
+  ports:
+  - protocol: TCP
+    port: 80
+    targetPort: 3000
+    name: http
+
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: brd-generator-hpa
+  namespace: brd-generator
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: brd-generator
+  minReplicas: 3
+  maxReplicas: 10
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 70
+  - type: Resource
+    resource:
+      name: memory
+      target:
+        type: Utilization
+        averageUtilization: 80
+
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: brd-generator-pdb
+  namespace: brd-generator
+spec:
+  minAvailable: 2
+  selector:
+    matchLabels:
+      app: brd-generator
